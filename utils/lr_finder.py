@@ -62,7 +62,7 @@ torch.manual_seed(218)
 if torch.cuda.is_available():
     device = torch.device("cuda:0")
     torch.cuda.manual_seed(218)
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    #torch.set_default_tensor_type('torch.cuda.FloatTensor')
 else:
     device = torch.device("cpu")
     torch.set_default_tensor_type('torch.FloatTensor')
@@ -79,11 +79,12 @@ parser.add_argument('-n', '--num', type=int, help='Number of "data points" (audi
 parser.add_argument('--path', help='Directory to pull input (and maybe target) data from (default: None, means only synthesized-on-the-fly data)', default=None)
 parser.add_argument('--sr', type=int, help='Sampling rate', default=44100)
 parser.add_argument('--scale', type=float, help='Scale factor (of input size & whole model)', default=1.0)
-parser.add_argument('--shrink', type=int, help='Shink output chunk relative to input by this divisor', default=4)
+parser.add_argument('--shrink', type=float, help='Shink output chunk relative to input by this divisor', default=4)
 parser.add_argument('-t','--target', help="type of target: chunk or stream", default="stream")
 parser.add_argument('--start', type=float, help='starting learning rate for scan', default=1e-6)
 parser.add_argument('--stop', type=float, help='final learning rate for scan', default=4e-3)
 parser.add_argument('--screen', help='show plot on screen instead of file', action='store_true')
+parser.add_argument('-m','--model', help="type of model: FC or CNN", default="FC")
 
 args = parser.parse_args()
 
@@ -119,8 +120,9 @@ effect.info()
 
 
 # Initialize nn modules
-model = st.nn_proc.st_model(scale_factor=args.scale, shrink_factor=args.shrink, num_knobs=len(effect.knob_names), sr=44100)
+model = st.nn_proc.st_model(scale_factor=args.scale, shrink_factor=args.shrink, num_knobs=len(effect.knob_names), sr=44100, model_type=args.model)
 chunk_size = model.in_chunk_size
+model.to(device)
 
 optimizer = torch.optim.Adam(list(model.parameters()), lr=args.lrmax, weight_decay=0)
 

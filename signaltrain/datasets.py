@@ -233,8 +233,10 @@ class AudioFileDataSet(Dataset):
             in_audio, targ_audio, knobs_wc = self.read_one_new_file_pair() # read x, y, knobs
 
         # Grab a random chunk from within total audio nfile
-        assert len(in_audio) > self.chunk_size, f"Error: len(in_audio)={len(in_audio)}, must be > self.chunk_size={self.chunk_size}"
-        ibgn = np.random.randint(0, len(in_audio) - self.chunk_size)
+        assert len(in_audio) >= self.chunk_size, f"Error: len(in_audio)={len(in_audio)}, must be > self.chunk_size={self.chunk_size}"
+        ibgn = 0
+        if len(in_audio)!=self.chunk_size:
+            ibgn = np.random.randint(0, len(in_audio) - self.chunk_size)
         x_item = in_audio[ibgn:ibgn+self.chunk_size]
         y_item = targ_audio[ibgn:ibgn+self.chunk_size]
 

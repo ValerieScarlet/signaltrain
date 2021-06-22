@@ -13,6 +13,45 @@ except ImportError:
     from cls_fe_dft import Analysis, Synthesis
 torch.backends.cudnn.benchmark = True   # makes Turing GPU ops faster! https://discuss.pytorch.org/t/what-does-torch-backends-cudnn-benchmark-do/5936/3
 
+class AttentionLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, key_channels):
+        super().__init__()
+        self.conv_Q = nn.Linear(in_channels, key_channels, bias = False)
+        self.conv_K = nn.Linear(in_channels, key_channels, bias = False)
+        self.conv_V = nn.Linear(in_channels, out_channels, bias = False)
+
+        self.layer_list = [self.conv_Q, self.conv_K, self.conv_V]
+
+        self.initialize()
+
+
+
+    def forward(self, x):
+        Q = self.conv_Q(x)
+        K = self.conv_K(x)
+        V = self.conv_V(x)
+        A = torch.einsum('nct,ncs->nts', Q, K).softmax(2)
+        y = torch.einsum('nts,ncs->nct', A, V)
+        return y
+
+    def __repr__(self):
+        return self._get_name() + \
+            '(in_channels={}, out_channels={}, key_channels={})'.format(
+                self.conv_Q.in_channels,
+                self.conv_V.out_channels,
+                self.conv_K.out_channels
+            )
+
+    def attention(self, x):
+        Q = self.conv_Q(x)
+        K = self.conv_K(x)
+        A = torch.einsum('nct,ncs->nts', Q, K).softmax(2)
+        return A
+
+    def initialize(self):
+        for x in self.layer_list:
+            torch.nn.init.xavier_normal_(x.weight)
+
 
 def freeze_layers(layers):
     for layer in layers:
@@ -48,16 +87,23 @@ class AsymAutoEncoder(nn.Module):
         self.fnn_enc2 = nn.Linear(self._R, self._R//rf, bias=self.use_bias)
         self.fnn_enc3 = nn.Linear(self._R//rf, self._R//rf**2, bias=self.use_bias)
         self.fnn_enc4 = nn.Linear(self._R//rf**2, self._R//rf**2, bias=self.use_bias)
+        self.attention = AttentionLayer(self._R//rf**2  + self._K, self._R//rf**2, self._R//rf**2)
 
-        self.fnn_addknobs = nn.Linear(self._R//rf**2 + self._K, self._R//rf**2, bias=self.use_bias)
+        
+        
+
+        #self.fnn_addknobs = nn.Linear(self._R//rf**2 + self._K, self._R//rf**2, bias=self.use_bias)
+
+        #self.attention = AttentionLayer(self._R//rf**2 + self._K, self._R//rf**2, self._R//rf**2)
+
 
         self.fnn_dec4 = nn.Linear(self._R//rf**2, self._R//rf**2, bias=self.use_bias) # repeat size, now with knobs catted
         self.fnn_dec3 = nn.Linear(self._R//rf**2, self._R//rf, bias=self.use_bias)
         self.fnn_dec2 = nn.Linear(self._R//rf, self._R, bias=self.use_bias)
         self.fnn_dec = nn.Linear(self._R, self._OT, bias=self.use_bias)
 
-        self.layer_list = [self.fnn_enc, self.fnn_enc2, self.fnn_enc3, self.fnn_enc4,
-            self.fnn_addknobs, self.fnn_dec4, self.fnn_dec3, self.fnn_dec2, self.fnn_dec]
+        self.layer_list = [self.fnn_enc, self.fnn_enc2, self.fnn_enc3, self.fnn_enc4, #self.fnn_addknobs, 
+            self.fnn_dec4, self.fnn_dec3, self.fnn_dec2, self.fnn_dec]
 
         # Activation function(s)
         self.relu = nn.ELU()#  nn.LeakyReLU()
@@ -88,13 +134,25 @@ class AsymAutoEncoder(nn.Module):
         z = self.relu(self.fnn_enc4(z))
         if return_acts: acts.append(z)
 
-
         knobs_r = knobs.unsqueeze(1).repeat(1, z.size()[1], 1)  # repeat the knobs to make dimensions match
         catted = torch.cat((z,knobs_r),2)
         if return_acts: acts.append(catted)
 
-        z = self.relu( self.fnn_addknobs( catted ) )
+        z  = self.relu(self.attention(catted))
         if return_acts: acts.append(z)
+
+
+
+        '''
+        z = self.relu( self.head1(catted1) )
+        z = torch.cat((z,self.relu(self.head2(catted2))),2)
+        z = torch.cat((z,self.relu(self.head3(catted3))),2)
+        z = torch.cat((z,self.relu(self.head4(catted4))),2)
+        '''
+        #z  = self.relu(self.fnn_addknobs(catted))
+        #if return_acts: acts.append(z)        
+
+        
 
         z = self.relu( self.fnn_dec4(z))
         if return_acts: acts.append(z)
@@ -127,7 +185,7 @@ class AsymAutoEncoder(nn.Module):
 
 
 
-'''
+
 # currently CNN version is unused because it's slow
 
 class cnnblock(nn.Module):
@@ -257,8 +315,8 @@ class AsymCNNAutoEncoder(nn.Module):
             out = self.relu(self.fnn_dec(z))
 
         result = out.transpose(2, 1)
-        return result
-'''
+        return result,[]
+
 
 
 class AsymMPAEC(nn.Module):
@@ -276,7 +334,7 @@ class AsymMPAEC(nn.Module):
            decomposition_rank:       size of first-smaller layer in autoencoder (we added more as we wrote this)
     """
     def __init__(self, expected_time_frames, ft_size=1024, hop_size=384,
-        decomposition_rank=64, n_knobs=4, output_tf=None):
+        decomposition_rank=64, n_knobs=4, output_tf=None, model_type="FC"):
         super(AsymMPAEC, self).__init__()
 
         print("AsymMPAEC: expected_time_frames, ft_size, hop_size, decomposition_rank, n_knobs, output_tf = ", expected_time_frames, ft_size, hop_size, decomposition_rank, n_knobs, output_tf)
@@ -287,8 +345,13 @@ class AsymMPAEC(nn.Module):
 
         self.dft_analysis = Analysis(ft_size=ft_size, hop_size=hop_size)
         self.dft_synthesis = Synthesis(ft_size=ft_size, hop_size=hop_size)
-        self.aenc = AsymAutoEncoder(T=expected_time_frames, R=decomposition_rank, K=n_knobs, OT=self.output_tf)
-        self.phs_aenc = AsymAutoEncoder(T=expected_time_frames, R=decomposition_rank, K=n_knobs, OT=self.output_tf)
+        if model_type=="FC":
+            self.aenc = AsymAutoEncoder(T=expected_time_frames, R=decomposition_rank, K=n_knobs, OT=self.output_tf)
+            self.phs_aenc = AsymAutoEncoder(T=expected_time_frames, R=decomposition_rank, K=n_knobs, OT=self.output_tf)
+        elif model_type=="CNN":
+            self.aenc = AsymCNNAutoEncoder(T=expected_time_frames, R=decomposition_rank, K=n_knobs, OT=self.output_tf)
+            self.phs_aenc = AsymCNNAutoEncoder(T=expected_time_frames, R=decomposition_rank, K=n_knobs, OT=self.output_tf)
+
         #self.valve = nn.Parameter(torch.tensor([0.2,1.0]), requires_grad=True)  # "wet-dry mix"
 
 
@@ -345,7 +408,7 @@ class st_model(nn.Module):
     """
     Wrapper routine for AsymMPAEC.  Enables generic call in case we change later
     """
-    def __init__(self, scale_factor=1, shrink_factor=4, num_knobs=3, sr=44100, scale_scheme='lean'):
+    def __init__(self, scale_factor=1, shrink_factor=4, num_knobs=3, sr=44100, scale_scheme='lean', model_type="FC"):
         """
             scale_factor: change dimensionality of run by this factor
             shrink_factor:  output shrink factor, i.e. fraction of output actually trained on
@@ -361,6 +424,7 @@ class st_model(nn.Module):
         self.scale_factor, self.shrink_factor = scale_factor, shrink_factor
         self.in_chunk_size, self.out_chunk_size = chunk_size, out_chunk_size
         self.num_knobs = num_knobs
+        self.model_type = model_type
 
         print("Input chunk size =",chunk_size)
         print("Intended Output chunk size =",out_chunk_size)
@@ -382,7 +446,7 @@ class st_model(nn.Module):
             print(f"Warning: y_size ({y_size}) should equal out_chunk_size ({out_chunk_size})")
             print(f"    Setting out_chunk_size = y_size = {y_size}")
         self.out_chunk_size = y_size
-        self.mpaec = AsymMPAEC(expected_time_frames, ft_size=ft_size, hop_size=hop_size, n_knobs=num_knobs, output_tf=output_time_frames)
+        self.mpaec = AsymMPAEC(expected_time_frames, ft_size=ft_size, hop_size=hop_size, n_knobs=num_knobs, output_tf=output_time_frames, model_type=model_type)
 
         #self.freeze()    # TODO: try this out another time
 
