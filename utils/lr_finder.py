@@ -34,17 +34,19 @@ def lrfind(model, dataloader, optimizer, calc_loss, start=1e-6, stop=4e-3, num_l
 
         #x_cuda, y_cuda, knobs_cuda = datagen.new()
         x_cuda, y_cuda, knobs_cuda = x.to(device), y.to(device), knobs.to(device)
-        x_hat, mag, mag_hat = model.forward(x_cuda, knobs_cuda)
-        loss = calc_loss(x_hat.float() ,y_cuda.float(), mag.float())
+        y_hat = model.forward(x_cuda, knobs_cuda)
+        loss = calc_loss(y_hat.float() ,y_cuda.float()).mean()
         lrs.append(lr_try)
         losses.append(loss.item())
         optimizer.zero_grad()
         loss.backward()
-        model.clip_grad_norm_()
+        if hasattr(model, 'clip_grad_norm_'):
+            model.clip_grad_norm_()
         optimizer.step()
 
     plt.figure(1)
-    plt.semilogx(lrs,losses)
+    #plt.semilogx(lrs,losses)
+    plt.loglog(lrs,losses)
     if to_screen:
         plt.show()
     else:
@@ -62,7 +64,7 @@ torch.manual_seed(218)
 if torch.cuda.is_available():
     device = torch.device("cuda:0")
     torch.cuda.manual_seed(218)
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    #torch.set_default_tensor_type('torch.cuda.FloatTensor')
 else:
     device = torch.device("cpu")
     torch.set_default_tensor_type('torch.FloatTensor')
@@ -78,12 +80,15 @@ parser.add_argument('--lrmax', help="max learning rate", default=1e-4) # Note: l
 parser.add_argument('-n', '--num', type=int, help='Number of "data points" (audio clips) per epoch', default=200000)
 parser.add_argument('--path', help='Directory to pull input (and maybe target) data from (default: None, means only synthesized-on-the-fly data)', default=None)
 parser.add_argument('--sr', type=int, help='Sampling rate', default=44100)
-parser.add_argument('--scale', type=float, help='Scale factor (of input size & whole model)', default=1.0)
-parser.add_argument('--shrink', type=int, help='Shink output chunk relative to input by this divisor', default=4)
 parser.add_argument('-t','--target', help="type of target: chunk or stream", default="stream")
 parser.add_argument('--start', type=float, help='starting learning rate for scan', default=1e-6)
-parser.add_argument('--stop', type=float, help='final learning rate for scan', default=4e-3)
+parser.add_argument('--stop', type=float, help='final learning rate for scan', default=1e-1)
 parser.add_argument('--screen', help='show plot on screen instead of file', action='store_true')
+parser.add_argument("--sample_length", type=int, default=4096)
+parser.add_argument("--num_channels", type=int, default=12)
+parser.add_argument("--dilation_depth", type=int, default=10)
+parser.add_argument("--num_repeat", type=int, default=1)
+parser.add_argument("--kernel_size", type=int, default=2)
 
 args = parser.parse_args()
 
@@ -119,8 +124,11 @@ effect.info()
 
 
 # Initialize nn modules
-model = st.nn_proc.st_model(scale_factor=args.scale, shrink_factor=args.shrink, num_knobs=len(effect.knob_names), sr=44100)
-chunk_size = model.in_chunk_size
+model = st.nn_proc.signalNet(num_channels=args.num_channels, dilation_depth=args.dilation_depth, num_repeat=args.num_repeat, 
+            num_knobs=len(effect.knob_names), kernel_size=2)
+model.to(device)
+chunk_size = args.sample_length
+out_chunk_size = args.sample_length - (args.num_repeat * 2**args.dilation_depth -1)
 
 optimizer = torch.optim.Adam(list(model.parameters()), lr=args.lrmax, weight_decay=0)
 
@@ -128,13 +136,13 @@ datapath = args.path
 synth_data = datapath is None # Are we synthesizing data or do we expect it to come from files
 
 if synth_data:  # synthesize input & target data
-    dataset = st.datasets.SynthAudioDataSet(chunk_size, effect, sr=args.sr, datapoints=args.num, y_size=model.out_chunk_size, augment=True)
+    dataset = st.datasets.SynthAudioDataSet(chunk_size, effect, sr=args.sr, datapoints=args.num, y_size=out_chunk_size, augment=True)
 else:           # use prerecoded files for input & target data
-    dataset = st.datasets.AudioFileDataSet(chunk_size, effect, sr=args.sr,  datapoints=args.num, path=datapath+"/Train/",  y_size=model.out_chunk_size,
+    dataset = st.datasets.AudioFileDataSet(chunk_size, effect, sr=args.sr,  datapoints=args.num, path=datapath+"/Train/",  y_size=out_chunk_size,
         rerun=False, augment=True, preload=True)
 
 dataloader = DataLoader(dataset, batch_size=args.batch, num_workers=10, shuffle=True, worker_init_fn=st.datasets.worker_init)
 
-lrfind(model, dataloader, optimizer, st.loss_functions.calc_loss, start=args.start, stop=args.stop, to_screen=args.screen)
+lrfind(model, dataloader, optimizer, st.loss_functions.error_to_signal, start=args.start, stop=args.stop, to_screen=args.screen)
 
 # EOF

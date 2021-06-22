@@ -29,8 +29,8 @@ def save_checkpoint(checkpointname, model, epoch, parallel, optimizer, effect, s
         'optimizer': optimizer.state_dict(),
         'effect_name': effect.name,
         'knob_names': effect.knob_names, 'knob_ranges': effect.knob_ranges,
-        'scale_factor': model2save.scale_factor, 'shrink_factor': model2save.shrink_factor,
-        'in_chunk_size': model2save.in_chunk_size,'out_chunk_size': model2save.out_chunk_size,
+        'num_channels': model2save.num_channels, 'dilation_depth': model2save.dilation_depth,
+        'num_repeat': model2save.num_repeat, 'kernel_size': model2save.kernel_size,
         'sr': sr}
     torch.save(state, checkpointname)
 

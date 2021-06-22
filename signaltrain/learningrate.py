@@ -9,6 +9,7 @@ NOTE: moved LR finder to signaltrain/utils
 # imports
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 
 
 def get_1cycle_schedule(lr_max = 1e-3, n_data_points = 8000, epochs = 200,
@@ -29,17 +30,20 @@ def get_1cycle_schedule(lr_max = 1e-3, n_data_points = 8000, epochs = 200,
           optimizer.param_groups[0]['lr'] = lrs[iter_count]
   """
   #pct_start, div_factor = 0.3, 25.        # @sgugger's parameters in fastai code
-  pct_start, div_factor = 0.3, 15.       # my attempt to train faster
+  pct_start, div_factor = 0.1, 1.       # my attempt to train faster
   lr_start = lr_max/div_factor
-  lr_end = lr_start/1e2
+  lr_end = lr_start/1e02
   n_iter = n_data_points * epochs // batch_size     # number of iterations
   a1 = int(n_iter * pct_start)                      # boundary between increasing and decreasing
   a2 = n_iter - a1
 
   # make look-up table
   #lrs_first = np.linspace(lr_start, lr_max, a1)            # linear growth
-  lrs_first = (lr_max-lr_start)*(1-np.cos(np.linspace(0,np.pi,a1)))/2 + lr_start  # cosine growth
+  #lrs_first = (lr_max-lr_start)*(1-np.cos(np.linspace(0,np.pi,a1)))/2 + lr_start  # cosine growth
+  #lrs_first = (lr_max-lr_start)*(np.sin(np.linspace(0,np.pi/2,a1))) + lr_start  # sine growth
+  lrs_first = np.repeat(lr_start, a1)
   lrs_second = (lr_max-lr_end)*(1+np.cos(np.linspace(0,np.pi,a2)))/2 + lr_end  # cosine annealing
+  #lrs_second = (lr_max-lr_end)*(np.sin(np.linspace(np.pi/2,np.pi,a2))) + lr_end  # sine annealing
   lrs = np.concatenate((lrs_first, lrs_second))
 
   # also schedule the momentum
@@ -51,4 +55,15 @@ def get_1cycle_schedule(lr_max = 1e-3, n_data_points = 8000, epochs = 200,
 
   return lrs, moms
 
+
+if __name__ == "__main__":
+  x, y = get_1cycle_schedule(lr_max = 1e-3, n_data_points = 200000, epochs = 1000,
+                        batch_size = 200)
+  plt.figure(1)
+  plt.plot(x)
+
+  outfile = 'lr.png'
+  plt.savefig(outfile)
+  plt.close(plt.gcf())
+  print("\nLR Find finished. See "+outfile)
 # EOF

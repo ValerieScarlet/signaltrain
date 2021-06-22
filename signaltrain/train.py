@@ -33,7 +33,7 @@ except ImportError:
 
 def eval_status_save(model, effect, epoch, epochs, lr, mom, device, dataloader_val, logfilename, first_time,
     beta, vl_avg, out_checkpointname, parallel, optimizer, data_point, smoothed_loss, y_size, sr, status_every,
-    plot_every=100, cp_every=100, scale_by_freq=None):
+    plot_every=10, cp_every=50, scale_by_freq=None):
     """
     Status messages and run-time diagnostics.
     Check Validation set, write files & give garious messages about how we're doing
@@ -48,9 +48,8 @@ def eval_status_save(model, effect, epoch, epochs, lr, mom, device, dataloader_v
         val_batch_num += 1
         x_val_cuda, y_val_cuda, knobs_val_cuda = x_val.to(device), y_val.to(device), knobs_val.to(device)
 
-        y_val_hat, mag_val, mag_val_hat = model.forward(x_val_cuda, knobs_val_cuda)
-        loss_val = loss_functions.calc_loss(y_val_hat.float(), y_val_cuda.float(), mag_val_hat.float(),
-            scale_by_freq=scale_by_freq)#, l1_lambda=lr/1000 )
+        y_val_hat = model.forward(x_val_cuda, knobs_val_cuda)
+        loss_val = loss_functions.error_to_signal(y_val_cuda,y_val_hat).mean()
         vl_avg = beta*vl_avg + (1-beta)*loss_val.item()    # (running) average val loss
         if 0 == val_batch_num % status_every:
             timediff = time.time() - first_time
@@ -67,10 +66,11 @@ def eval_status_save(model, effect, epoch, epochs, lr, mom, device, dataloader_v
 
     if (epoch+1) % plot_every == 0:  # plot sample val data
         print("\nSaving sample data plots",end="")
+        x_val_cuda = torch.squeeze(x_val_cuda)
+        y_val_cuda = torch.squeeze(y_val_cuda)
+        y_val_hat = torch.squeeze(y_val_hat)
         io_methods.plot_valdata(x_val_cuda, knobs_val_cuda, y_val_cuda, y_val_hat, effect, epoch, loss_val, target_size=y_size)
 
-    if ((epoch+1) % 20 == 0) or (epoch == epochs-1):    # write out spectrograms from time to time
-        io_methods.plot_spectrograms(model, mag_val, mag_val_hat)
 
     # save checkpoint of model to file, which can be loaded later
     if ((epoch+1) % cp_every == 0) or (epoch==epochs-1):
@@ -89,7 +89,7 @@ def eval_status_save(model, effect, epoch, epochs, lr, mom, device, dataloader_v
 
 def train_loop(model, effect, device, optimizer, epochs, batch_size, lr_sched, mom_sched,
     dataloader, dataloader_val, y_size, parallel, logfilename, out_checkpointname,
-    plot_every=10, cp_every=25, sr=44100, lr_max=1e-4):
+    plot_every=1, cp_every=25, sr=44100, lr_max=1e-4):
     """
     The actual training loop called by train() below, after setup has occurred
         See train() below for variable meanings -- this all used to be in there.
@@ -118,28 +118,13 @@ def train_loop(model, effect, device, optimizer, epochs, batch_size, lr_sched, m
             data_point += batch_size
             if torch_amp and have_apex!=True:
                 with autocast():
-                    y_hat, mag, mag_hat = model.forward(x_cuda, knobs_cuda) # feed-forward synthesis
-
-                    # set up loss weighting
-                    if scale_by_freq is None:
-                        expfac = 7./mag_hat.size()[-1]   # exponential L1 loss scaling by ~1000 times (30dB) over freq range
-                        _scale_by_freq = torch.exp(expfac* torch.arange(0., mag_hat.size()[-1])).expand_as(mag_hat).float()
-                        scale_by_freq = _scale_by_freq.to(device)
-
+                    y_hat = model.forward(x_cuda, knobs_cuda) # feed-forward synthesis
                     # loss evaluation
-                    loss = loss_functions.calc_loss(y_hat.float(), y_cuda.float(), mag_hat.float(), scale_by_freq=scale_by_freq)#, l1_lambda=lr/1000)
+                    loss = loss_functions.error_to_signal(y_cuda,y_hat).mean()
             else:
-                y_hat, mag, mag_hat = model.forward(x_cuda, knobs_cuda) # feed-forward synthesis
-
-                # set up loss weighting
-                if scale_by_freq is None:
-                    expfac = 7./mag_hat.size()[-1]   # exponential L1 loss scaling by ~1000 times (30dB) over freq range
-                    _scale_by_freq = torch.exp(expfac* torch.arange(0., mag_hat.size()[-1])).expand_as(mag_hat).float()
-                    scale_by_freq = _scale_by_freq.to(device)
-
+                y_hat = model.forward(x_cuda, knobs_cuda) # feed-forward synthesis
                 # loss evaluation
-                loss = loss_functions.calc_loss(y_hat.float(), y_cuda.float(), mag_hat.float(), scale_by_freq=scale_by_freq)#, l1_lambda=lr/1000)
-
+                loss = loss_functions.error_to_signal(y_cuda,y_hat).mean()
             # Status message
             batch_num += 1
             if 0 == batch_num % status_every:
@@ -191,8 +176,9 @@ def train_loop(model, effect, device, optimizer, epochs, batch_size, lr_sched, m
 
 def train(effect=audio.Compressor_4c(), epochs=100, n_data_points=200000, batch_size=20,
     device=torch.device("cuda:0"), plot_every=10, cp_every=25, sr=44100, datapath=None,
-    scale_factor=1, shrink_factor=4, apex_opt="O0", target_type="stream", lr_max=1e-4,
-    in_checkpointname = 'modelcheckpoint.tar', compand=False, model_type="FC"):
+    num_channels=12, dilation_depth=10, apex_opt="O0", target_type="stream", lr_max=1e-4,
+    num_repeat=1, kernel_size=2, sample_length=4096,
+    in_checkpointname = 'modelcheckpoint.tar', compand=False):
     """
     Main training routine for signaltrain
 
@@ -204,8 +190,6 @@ def train(effect=audio.Compressor_4c(), epochs=100, n_data_points=200000, batch_
         device:           pytorch device to run on, either cpu or cuda (GPU)
         plot_every:       how often to generate plots of sample outputs
         cp_every:         save checkpoint every this many iterations
-        scale_factor:     change overal dimensionality of i/o chunks by this factor
-        shrink_factor:    output shrink factor, i.e. fraction of output actually trained on
         apex_opt:         option for apex multi-precision training. default is "O0" which means none
                           For Turing cards (e.g. RTX 2080 Ti), set this to "O2"
         target_type:      "chunk" (re-run the effect for each chunk) or "stream" (apply effect to whole audio stream)
@@ -215,9 +199,9 @@ def train(effect=audio.Compressor_4c(), epochs=100, n_data_points=200000, batch_
     """
 
     # print info about this training run
-    print(f'SignalTrain training execution began at {time.ctime()}. Options:')
+    print(f'SignalNET training execution began at {time.ctime()}. Options:')
     print(f'    epochs = {epochs}, n_data_points = {n_data_points}, batch_size = {batch_size}')
-    print(f'    scale_factor = {scale_factor}, shrink_factor = {shrink_factor}, apex_opt = {apex_opt}')
+    print(f'    num_channels = {num_channels}, dilation_depth = {dilation_depth}, apex_opt = {apex_opt}')
     num_knobs = len(effect.knob_names)
     print(f'    num_knobs = {num_knobs}')
     effect.info()  # Print effect settings
@@ -227,21 +211,22 @@ def train(effect=audio.Compressor_4c(), epochs=100, n_data_points=200000, batch_
     state_dict, rv = misc.load_checkpoint(in_checkpointname, fatal=False)
     if state_dict != {}:    # load metadata from a checkpoint if it exists
         #model.load_state_dict(state_dict)
-        scale_factor, shrink_factor = rv['scale_factor'], rv['shrink_factor']
+        num_channels, dilation_depth = rv['num_channels'], rv['dilation_depth']
+        num_repeat, kernal_size = rv['num_repeat'], rv['kernel_size']
         knob_names, knob_ranges = rv['knob_names'], rv['knob_ranges']
         model_num_knobs = len(knob_names)
         sr = rv['sr']
-        chunk_size, out_chunk_size = rv['in_chunk_size'], rv['out_chunk_size']
 
     # initialize from scratch
-    model = nn_proc.st_model(scale_factor=scale_factor, shrink_factor=shrink_factor, num_knobs=num_knobs, sr=sr, model_type=model_type)
+    model = nn_proc.signalNet(num_channels=num_channels, dilation_depth=dilation_depth, num_repeat=num_repeat, 
+        num_knobs=num_knobs, kernel_size=2)
     if state_dict != {}:
         model.load_state_dict(state_dict)   # overwrite the weights using the input checkpoint if it exists
-    chunk_size, out_chunk_size = model.in_chunk_size, model.out_chunk_size
+    chunk_size, out_chunk_size = sample_length, (sample_length - (2**dilation_depth - 1) * num_repeat)
     y_size = out_chunk_size
 
     print("Model defined.  Number of trainable parameters:",sum(p.numel() for p in model.parameters() if p.requires_grad))
-    print("      model.in_chunk_size, model.out_chunk_size = ",model.in_chunk_size, model.out_chunk_size)
+    print("      model.in_chunk_size, model.out_chunk_size = ",chunk_size, out_chunk_size)
     model.to(device)
 
     # Specify learning rate schedule...although we don't bother stepping the momentum

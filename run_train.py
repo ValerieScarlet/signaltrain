@@ -37,14 +37,17 @@ if __name__ == "__main__":
     parser.add_argument('-c','--compand', help='Turn on to use companded/decompanded audio', action='store_true')
     parser.add_argument('--effect', help='Name of effect to use. ("files" = search for "target_" and effect_info.ini files in path)', default="comp_4c")
     parser.add_argument('--epochs', type=int, help='Number of epochs to run', default=1000)
-    parser.add_argument('--lrmax', type=float, help="max learning rate", default=1e-4) # Note: lrmax should be obtained by running lr_finder in learningrate.py
+    parser.add_argument('--lrmax', type=float, help="max learning rate", default=1e-3) # Note: lrmax should be obtained by running lr_finder in learningrate.py
     parser.add_argument('-n', '--num', type=int, help='Number of "data points" (audio clips) per epoch', default=200000)
     parser.add_argument('--path', help='Directory to pull input (and maybe target) data from (default: None, means only synthesized-on-the-fly data)', default=None)
-    parser.add_argument('--sr', type=int, help='Sampling rate', default=44100)
-    parser.add_argument('--scale', type=float, help='Scale factor (of input size & whole model)', default=1.0)
-    parser.add_argument('--shrink', type=int, help='Shink output chunk relative to input by this divisor', default=4)
     parser.add_argument('-t','--target', help="type of target: chunk or stream", default="stream")
-    parser.add_argument('-m','--model', help="type of model: FC or CNN", default="FC")
+    parser.add_argument('--sr', type=int, help='Sampling rate', default=44100)
+    parser.add_argument("--sample_length", type=int, default=4096)
+    parser.add_argument("--num_channels", type=int, default=12)
+    parser.add_argument("--dilation_depth", type=int, default=10)
+    parser.add_argument("--num_repeat", type=int, default=1)
+    parser.add_argument("--kernel_size", type=int, default=2)
+
     args = parser.parse_args()
 
     # print command line as it was invoked (for reading nohup.out later)
@@ -98,9 +101,10 @@ if __name__ == "__main__":
     print("Running with args =",args)
     # call the trianing routine
     model = st.train.train(epochs=args.epochs, n_data_points=args.num, batch_size=args.batch, device=device, sr=args.sr,\
-        effect=effect, datapath=args.path, scale_factor=args.scale, shrink_factor=args.shrink,
-        apex_opt=args.apex, target_type=args.target, lr_max=args.lrmax, in_checkpointname=args.checkpoint,
-        compand=args.compand, model_type=args.model)
+        effect=effect, datapath=args.path, num_channels=args.num_channels, dilation_depth=args.dilation_depth,
+        apex_opt=args.apex, target_type=args.target, num_repeat=args.num_repeat, kernel_size=args.kernel_size, 
+        sample_length=args.sample_length, lr_max=args.lrmax, in_checkpointname=args.checkpoint, 
+        compand=args.compand)
 
     print("run_train.py: Execution completed.")
 # EOF

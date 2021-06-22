@@ -22,6 +22,17 @@ def mse(x, x_hat):
 def mae(x, x_hat):
     return torch.mean(torch.abs(x - x_hat))
 
+def pre_emphasis_filter(x, coeff=0.95):
+    return torch.cat((x[:, :, 0:1], x[:, :, 1:] - coeff * x[:, :, :-1]), dim=2)
+
+def error_to_signal(y, y_pred):
+    """
+    Error to signal ratio with pre-emphasis filter:
+    https://www.mdpi.com/2076-3417/10/3/766/htm
+    """
+    y, y_pred = pre_emphasis_filter(y), pre_emphasis_filter(y_pred)
+    return (y - y_pred).pow(2).sum(dim=2) / (y.pow(2).sum(dim=2) + 1e-10)
+
 # Main loss function
 def calc_loss(y_hat, y_cuda, mag_hat, batch_size=20, scale_by_freq=None, l1_lambda=2e-5, reg_logcosh=False):
     # Reconstruction term plus regularization -> Slightly less wiggly waveform
